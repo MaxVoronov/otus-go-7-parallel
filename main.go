@@ -4,13 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"sync"
 	"time"
 )
 
 const TotalJobs = 500
 const MaxWorkingTime = 10
-const MaxParallelJobs = 50
+const MaxParallelJobs = 10
 const JobsErrorLimit = 25
 
 func main() {
@@ -26,43 +25,43 @@ func main() {
 }
 
 func Run(fnList []func() error) {
-	var wg sync.WaitGroup
-	workers := make(chan struct{}, MaxParallelJobs)
-	jobErrors := make(chan error, JobsErrorLimit)
+	jobs := make(chan func() error, MaxParallelJobs)
+	done := make(chan struct{})
 	errorCounter := &ErrorCounter{}
 
-	// Read errors from channel and increase counter
-	go func(counter *ErrorCounter) {
-		for {
-			select {
-			case <-jobErrors:
-				counter.Increase()
+	for i := 0; i < MaxParallelJobs; i++ {
+		go func(counter *ErrorCounter, idx int) {
+			fmt.Printf("[#%d] Worker started \n", idx)
+			for {
+				select {
+				case fn := <-jobs:
+					fmt.Printf("[#%d] Start processing of new job\n", idx)
+					if err := fn(); err != nil {
+						counter.Increase()
+						fmt.Printf("[#%d] Failed to process job\n", idx)
+					} else {
+						fmt.Printf("[#%d] Successfull done\n", idx)
+					}
+				case <-done:
+					fmt.Printf("[#%d] Got exit signal\n", idx)
+					return
+				}
 			}
-		}
-	}(errorCounter)
+		}(errorCounter, i)
+	}
 
-	for i, f := range fnList {
+	for _, job := range fnList {
 		if !errorCounter.Less(JobsErrorLimit) {
+			fmt.Printf("--== Max error limit: %d ==--\n", errorCounter.Value())
+			done <- struct{}{}
 			break
 		}
 
-		workers <- struct{}{}
-		wg.Add(1)
-
-		fmt.Printf("Starting new job #%d\n", i)
-		go func(fn func() error, idx int) {
-			defer wg.Done()
-			if err := fn(); err != nil {
-				fmt.Printf("Failed to finish job #%d\n", idx)
-				jobErrors <- err
-			} else {
-				fmt.Printf("Job #%d was succesufully done\n", idx)
-			}
-			<-workers
-		}(f, i)
+		fmt.Println("<-- Sent job to worker")
+		jobs <- job
 	}
 
-	wg.Wait()
+	fmt.Println("Done!")
 }
 
 func someUsefulWork() error {
